@@ -55,7 +55,11 @@ class PowerLaw(Model):
         # to make a copy of the array when we run the model
         self.I_ref <<= u.uK_RJ
         self.freq_ref_I = u.Quantity(freq_ref_I).to(u.GHz)
-        self.has_polarization = map_Q is not None
+        #self.has_polarization = map_Q is not None
+        
+        # OVERIDE: SET POLARIZATION TO FALSE AT ALL TIMES.
+        self.has_polarization = False
+        
         if self.has_polarization:
             self.Q_ref = self.read_map(map_Q, unit=unit_Q)
             self.Q_ref <<= u.uK_RJ
@@ -73,6 +77,7 @@ class PowerLaw(Model):
         freqs = utils.check_freq_input(freqs)
         weights = utils.normalize_weights(freqs, weights)
         if not self.has_polarization:
+            print('I DO NOT have polarization')
             outputs = (
                 get_emission_numba_IQU(
                     freqs,
@@ -87,6 +92,7 @@ class PowerLaw(Model):
                 << u.uK_RJ
             )
         else:
+            print('I have polarization')
             outputs = (
                 get_emission_numba_IQU(
                     freqs,

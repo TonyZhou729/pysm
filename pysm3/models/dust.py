@@ -72,13 +72,26 @@ class ModifiedBlackBody(Model):
         # to make a copy of the array when we run the model
         self.I_ref <<= u.uK_RJ
         self.freq_ref_I = u.Quantity(freq_ref_I).to(u.GHz)
+        
+        # OVERRIDE TO HAVE NO POLARIZATION
+        has_polarization = False
+
         self.has_polarization = has_polarization
+ 
         if has_polarization:
+            print('Polarization maps generated for dust. Override unsuccessful')
             self.Q_ref = self.read_map(map_Q, unit=unit_Q)
             self.Q_ref <<= u.uK_RJ
             self.U_ref = self.read_map(map_U, unit=unit_U)
             self.U_ref <<= u.uK_RJ
+            self.freq_ref_P = u.Quantity(freq_ref_P).to(u.GHz)    
+        else:
+            self.Q_ref = np.zeros(self.I_ref.size)
+            self.Q_ref <<= u.uK_RJ
+            self.U_ref = np.zeros(self.I_ref.size)
+            self.U_ref <<= u.uK_RJ
             self.freq_ref_P = u.Quantity(freq_ref_P).to(u.GHz)
+        
         self.mbb_index = (
             self.read_map(map_mbb_index, unit="")
             if isinstance(map_mbb_index, (str, Path))
@@ -106,6 +119,7 @@ class ModifiedBlackBody(Model):
             self.freq_ref_P.value,
             self.mbb_index.value,
             self.mbb_temperature.value,
+            self.has_polarization
         )
         return outputs << u.uK_RJ
 
@@ -121,6 +135,7 @@ def get_emission_numba(
     freq_ref_P,
     mbb_index,
     mbb_temperature,
+    has_polarization,
 ):
     output = np.zeros((3, len(I_ref)), dtype=I_ref.dtype)
     if len(freqs) > 1:
@@ -129,14 +144,21 @@ def get_emission_numba(
         temp = output
 
     I, Q, U = 0, 1, 2
+
+    # OVERRIDE: REMOVE ALL PLACES OF POLARIZATION CALCULATIONS
+
     for i, (freq, weight) in enumerate(zip(freqs, weights)):
         temp[I, :] = I_ref
-        temp[Q, :] = Q_ref
-        temp[U, :] = U_ref
         temp[I] *= (freq / freq_ref_I) ** (mbb_index - 2.0)
-        temp[Q:] *= (freq / freq_ref_P) ** (mbb_index - 2.0)
         temp[I] *= blackbody_ratio(freq, freq_ref_I, mbb_temperature)
-        temp[Q:] *= blackbody_ratio(freq, freq_ref_P, mbb_temperature)
+        
+        if has_polarization:
+            print('ModifiedBlackbody Object with polarization')
+            temp[Q, :] = Q_ref
+            temp[U, :] = U_ref
+            temp[Q:] *= (freq / freq_ref_P) ** (mbb_index - 2.0)
+            temp[Q:] *= blackbody_ratio(freq, freq_ref_P, mbb_temperature)
+    
         if len(freqs) > 1:
             utils.trapz_step_inplace(freqs, weights, i, temp, output)
     return output
