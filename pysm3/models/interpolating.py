@@ -159,7 +159,7 @@ class InterpolatingComponent(Model):
             field=(0, 1, 2) if self.has_polarization else 0,
             unit=self.input_units,
         )
-        return m.to(u.uK_RJ, equivalencies=u.cmb_equivalencies(freq * u.GHz)).value
+        return m
 
 
 #@njit(parallel=False)
@@ -209,8 +209,7 @@ def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, ki
                 freq_range[int_interpolation_weight + 1]
             ]
             trapz_step_inplace(freqs, weights, i, m, output)
-    elif kind == 'linear':
-        print('linear')
+    else:
         # Loop through every frequency in freqs.
         for i in range(len(freqs)):
             if (freqs[i] in freq_range):
@@ -222,12 +221,19 @@ def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, ki
                 # Upper and lower bounds of interpolation. 
                 lower = all_maps[freq_range[int_pos]]
                 upper = all_maps[freq_range[int_pos+1]]
-                m = calc_inter_linear(freqs[i], 
+                m = calc_interpolation(freqs[i], 
                                       freq_range[int_pos], freq_range[int_pos+1], 
-                                      lower, upper) # Calculate interpolated emission.
+                                      lower, upper, kind) # Calculate interpolated emission.
                 trapz_step_inplace(freqs, weights, i, m, output)
     return output
 
-def calc_inter_linear(nu, nu_a, nu_b, ma, mb):
-    m = ((nu - nu_a) * (mb - ma) / (nu_b - nu_a)) + ma
+def calc_interpolation(nu, nu_a, nu_b, ma, mb, kind):
+    if kind == 'linear':
+        # Linear interpolation formula.
+        m = ((nu - nu_a) * (mb - ma) / (nu_b - nu_a)) + ma
+    elif kind == 'log':
+        # Logarithmic space interpolation formula.
+        expo = np.log10(mb/ma) * np.log10(nu/nu_a) / np.log10(nu_b/nu_a)
+        print(expo)
+        m = ma * np.power(10.0, expo)
     return m
