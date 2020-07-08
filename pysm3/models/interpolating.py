@@ -79,7 +79,7 @@ class InterpolatingComponent(Model):
         return filenames
 
     @u.quantity_input
-    def get_emission(self, freqs: u.GHz, weights=None) -> u.uK_RJ:
+    def get_emission(self, freqs: u.GHz, weights=None) -> u.K_CMB:
         nu = utils.check_freq_input(freqs)
         weights = utils.normalize_weights(nu, weights)
 
@@ -89,14 +89,15 @@ class InterpolatingComponent(Model):
             # available as input
             check_isclose = np.isclose(self.freqs, nu[0])
             if np.any(check_isclose):
-
+                if self.verbose:
+                    print('Single frequency {} GHz was cached, returning cached data'.format(nu[0]))
                 freq = self.freqs[check_isclose][0]
                 out = self.read_map_by_frequency(freq)
                 if self.has_polarization:
-                    return out << u.uK_RJ
+                    return out << u.K_CMB
                 else:
                     zeros = np.zeros_like(out)
-                    return np.array([out, zeros, zeros]) << u.uK_RJ
+                    return np.array([out, zeros, zeros]) << u.K_CMB
 
         npix = hp.nside2npix(self.nside)
         if nu[0] < self.freqs[0]:
@@ -105,14 +106,14 @@ class InterpolatingComponent(Model):
                     nu[0], self.freqs[0]
                 )
             )
-            return np.zeros((3, npix)) << u.uK_RJ
+            return np.zeros((3, npix)) << u.K_CMB
         if nu[-1] > self.freqs[-1]:
             warnings.warn(
                 "Frequency not supported, requested {} Ghz > upper bound {} GHz".format(
                     nu[-1], self.freqs[-1]
                 )
             )
-            return np.zeros((3, npix)) << u.uK_RJ
+            return np.zeros((3, npix)) << u.K_CMB
 
         first_freq_i, last_freq_i = np.searchsorted(self.freqs, [nu[0], nu[-1]])
         first_freq_i -= 1
@@ -134,7 +135,7 @@ class InterpolatingComponent(Model):
                         "IQU" if self.has_polarization else "I"
                     ):
                         print(
-                            "Mean emission at {} GHz in {}: {:.4g} uK_RJ".format(
+                            "Mean emission at {} GHz in {}: {:.4g} K_CMB".format(
                                 freq, pol, self.cached_maps[freq][i_pol].mean()
                             )
                         )
@@ -145,7 +146,7 @@ class InterpolatingComponent(Model):
         )
 
         # the output of out is always 2D, (IQU, npix)
-        return out << u.uK_RJ
+        return out << u.K_CMB
 
     def read_map_by_frequency(self, freq):
         filename = self.maps[freq]
@@ -159,7 +160,7 @@ class InterpolatingComponent(Model):
             field=(0, 1, 2) if self.has_polarization else 0,
             unit=self.input_units,
         )
-        return m
+        return m.value
 
 
 #@njit(parallel=False)
@@ -198,7 +199,8 @@ def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, ki
     )
     index_range = np.arange(len(freq_range))
     if kind == 'linear_origin':
-        print('linear_origin')
+        # The original implementation of linear interpolation by pysm3, kept in place here
+        # for reference purposes. Call with interpolation kind : "linear_origin"
         for i in range(len(freqs)):
             interpolation_weight = np.interp(freqs[i], freq_range, index_range)
             int_interpolation_weight = int(interpolation_weight)
@@ -228,12 +230,37 @@ def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, ki
     return output
 
 def calc_interpolation(nu, nu_a, nu_b, ma, mb, kind):
+    """
+    Computes interpolated emission given reference emissions and frequencies.
+
+    Parameters
+    ----------
+    nu : float
+        Frequency at which emission is to be interpolated
+    nu_a : float
+        Lower reference frequency
+    nu_b : float
+        Higher reference frequency
+    ma : np.ndarray
+        Cached emission of lower reference frequency
+    mb : np.ndarray
+        Cached emission of higher reference frequency
+    kind : string
+        Interpolation method. Supported types are 'linear' and 'log'.
+        Desides which interpolation formula to be used, should be decided
+        by the nature of the data to be interpolated.
+    
+    Returns
+    ----------
+    m : np.ndarray
+        Output interpolated emission, same unit, data type and shape
+        as cached reference emissions.
+    """
     if kind == 'linear':
         # Linear interpolation formula.
         m = ((nu - nu_a) * (mb - ma) / (nu_b - nu_a)) + ma
     elif kind == 'log':
         # Logarithmic space interpolation formula.
         expo = np.log10(mb/ma) * np.log10(nu/nu_a) / np.log10(nu_b/nu_a)
-        print(expo)
         m = ma * np.power(10.0, expo)
     return m
