@@ -16,8 +16,8 @@ class InterpolatingComponent(Model):
         path,
         input_units,
         nside,
-        interpolation_kind="linear",
-        has_polarization=True,
+        interpolation_kind="linear_origin",
+        has_polarization=False,
         map_dist=None,
         verbose=False,
     ):
@@ -41,7 +41,10 @@ class InterpolatingComponent(Model):
         nside : int
             HEALPix NSIDE of the output maps
         interpolation_kind : string
-            Currently only linear is implemented
+            Change alternate way of interpolating linearly as well as 
+            logarithmic. Will compare computation time and quality to
+            original pysm3 commit. 
+            Supported: "linear", "log", "linear_origin"
         has_polarization : bool
             whether or not to simulate also polarization maps
         map_dist : pysm.MapDistribution
@@ -137,7 +140,8 @@ class InterpolatingComponent(Model):
                         )
 
         out = compute_interpolated_emission_numba(
-            nu, weights, freq_range, self.cached_maps
+            nu, weights, freq_range, 
+            self.cached_maps, self.interpolation_kind
         )
 
         # the output of out is always 2D, (IQU, npix)
@@ -158,21 +162,72 @@ class InterpolatingComponent(Model):
         return m.to(u.uK_RJ, equivalencies=u.cmb_equivalencies(freq * u.GHz)).value
 
 
-@njit(parallel=False)
-def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps):
+#@njit(parallel=False)
+def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, kind):
+    """
+    Compute a single/bandpass emission from given cached frequency emissions. 
+    Intended only for intensity (for now) until polarization are clearly needed.
+
+    Parameters
+    ----------
+    freqs : np.array
+        Array containing all frequencies to be integrated in a bandpass. Single value
+        implies return one interpolated emission map at that frequency.
+    weights : np.array
+        Array containing the normalized corresponding weights of each frequency within
+        the bandpass. If none, assume tophat integration. 
+    freq_range : np.array
+        Array containing the range of frequencies considered within the cached maps. The range
+        extends on the lower and upper bound just enough to encapsulate all frequencies in the 
+        given bandpass. Frequencies outside this range are not used for interpolation.
+    all_maps : numbad typed Dictionary
+        Contains key and value pairs of frequency and emission data. Retrieve emission
+        from the dictionary by passing in the corresponding frequency.
+    kind : string
+        Specifies the kind of interpolation technique: "linear", or "log". Use "linear_origin"
+        for the original linear interpolation by pysm3. 
+
+    Returns
+    ----------
+    output : np.ndarray
+        Array containing output emission. 
+    """ 
+   
     output = np.zeros(
         all_maps[freq_range[0]].shape, dtype=all_maps[freq_range[0]].dtype
     )
     index_range = np.arange(len(freq_range))
-    for i in range(len(freqs)):
-        interpolation_weight = np.interp(freqs[i], freq_range, index_range)
-        int_interpolation_weight = int(interpolation_weight)
-        m = (interpolation_weight - int_interpolation_weight) * all_maps[
-            freq_range[int_interpolation_weight]
-        ]
-        m += (int_interpolation_weight + 1 - interpolation_weight) * all_maps[
-            freq_range[int_interpolation_weight + 1]
-        ]
-
-        trapz_step_inplace(freqs, weights, i, m, output)
+    if kind == 'linear_origin':
+        print('linear_origin')
+        for i in range(len(freqs)):
+            interpolation_weight = np.interp(freqs[i], freq_range, index_range)
+            int_interpolation_weight = int(interpolation_weight)
+            m = (interpolation_weight - int_interpolation_weight) * all_maps[
+                freq_range[int_interpolation_weight]
+            ]
+            m += (int_interpolation_weight + 1 - interpolation_weight) * all_maps[
+                freq_range[int_interpolation_weight + 1]
+            ]
+            trapz_step_inplace(freqs, weights, i, m, output)
+    elif kind == 'linear':
+        print('linear')
+        # Loop through every frequency in freqs.
+        for i in range(len(freqs)):
+            if (freqs[i] in freq_range):
+                m = all_maps[freqs[i]] # Case where desired frequency is cached.
+            else:
+                pos = np.interp(freqs[i], freq_range, index_range) # Find position this freq belongs
+                # in available frequencies through interpolation. 
+                int_pos = int(pos)
+                # Upper and lower bounds of interpolation. 
+                lower = all_maps[freq_range[int_pos]]
+                upper = all_maps[freq_range[int_pos+1]]
+                m = calc_inter_linear(freqs[i], 
+                                      freq_range[int_pos], freq_range[int_pos+1], 
+                                      lower, upper) # Calculate interpolated emission.
+                trapz_step_inplace(freqs, weights, i, m, output)
     return output
+
+def calc_inter_linear(nu, nu_a, nu_b, ma, mb):
+    m = ((nu - nu_a) * (mb - ma) / (nu_b - nu_a)) + ma
+    return m
