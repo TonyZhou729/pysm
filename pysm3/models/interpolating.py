@@ -16,7 +16,8 @@ class InterpolatingComponent(Model):
         path,
         input_units,
         nside,
-        interpolation_kind="linear_origin",
+        filetype='fits',
+        interpolation_kind='log',
         has_polarization=False,
         map_dist=None,
         verbose=False,
@@ -40,11 +41,16 @@ class InterpolatingComponent(Model):
             Any unit available in PySM3 e.g. "uK_RJ", "uK_CMB"
         nside : int
             HEALPix NSIDE of the output maps
+        filetype : str
+            Type of reference data. The interpolations do so over frequencies,
+            so data in any shape and filetype can work, as long as the reference and
+            the output are of the same type and data points are in matching indices.
+                "fits" for fullsky HEALPix maps.
+                "txt" for .txt files containing masked HEALPix pixels.
         interpolation_kind : string
             Change alternate way of interpolating linearly as well as 
-            logarithmic. Will compare computation time and quality to
-            original pysm3 commit. 
-            Supported: "linear", "log", "linear_origin"
+            logarithmic.
+            Supported: "linear", "log", "linear_origin" (Original linear implementation)
         has_polarization : bool
             whether or not to simulate also polarization maps
         map_dist : pysm.MapDistribution
@@ -54,8 +60,9 @@ class InterpolatingComponent(Model):
         """
 
         super().__init__(nside=nside, map_dist=map_dist)
+        self.filetype = filetype
         self.maps = {}
-        self.maps = self.get_filenames(path)
+        self.maps = self.get_filenames(path, filetype)
 
         # use a numba typed Dict so we can used in JIT compiled code
         self.cached_maps = Dict.empty(
@@ -68,14 +75,23 @@ class InterpolatingComponent(Model):
         self.has_polarization = has_polarization
         self.interpolation_kind = interpolation_kind
         self.verbose = verbose
-
-    def get_filenames(self, path):
+        
+    def get_filenames(self, path, filetype):
         # Override this to implement name convention
         filenames = {}
         for f in os.listdir(path):
-            if f.endswith(".fits"):
-                freq = float(os.path.splitext(f)[0])
-                filenames[freq] = os.path.join(path, f)
+            # Fullsky HEALPix fits files.
+            if filetype == 'fits':
+                if f.endswith(".fits"):
+                    freq = float(os.path.splitext(f)[0]) # Frequency as key
+                    filenames[freq] = os.path.join(path, f) # Path to data as value
+            # txt file containing masked HEALPix indices.
+            # Associated with a HEALPix mask, but since interpolation is done in frequency
+            # the mask is not needed.
+            elif filetype == 'txt':
+                if f.endswith(".txt"):
+                    freq = float(os.path.splitext(f)[0])
+                    filenames[freq] = os.path.join(path, f)
         return filenames
 
     @u.quantity_input
@@ -140,6 +156,9 @@ class InterpolatingComponent(Model):
                             )
                         )
 
+        if self.verbose:
+            print('Interpolation type is {}'.format(self.interpolation_kind))
+
         out = compute_interpolated_emission_numba(
             nu, weights, freq_range, 
             self.cached_maps, self.interpolation_kind
@@ -154,13 +173,20 @@ class InterpolatingComponent(Model):
 
     def read_map_file(self, freq, filename):
         if self.verbose:
-            print("Reading map {}".format(filename))
-        m = self.read_map(
-            filename,
-            field=(0, 1, 2) if self.has_polarization else 0,
-            unit=self.input_units,
-        )
-        return m.value
+            print("Reading map {} of type {}".format(filename, self.filetype))
+        if self.filetype == 'fits':
+            m = self.read_map(
+                filename,
+                field=(0, 1, 2) if self.has_polarization else 0,
+                unit=self.input_units,
+            )
+            return m.value
+        # Just a simple np.loadtxt to load the pixels into an array.
+        elif self.filetype == 'txt':
+            m = np.loadtxt(filename)
+            if self.verbose:
+                print('txt emission data of shape {}'.format(m.shape))
+            return m
 
 
 #@njit(parallel=False)
