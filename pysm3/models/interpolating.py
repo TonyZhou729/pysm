@@ -17,7 +17,8 @@ class InterpolatingComponent(Model):
         input_units,
         nside,
         filetype='fits',
-        interpolation_kind='log',
+        interpolation_type='log',
+        integration_type="trapz",
         has_polarization=False,
         map_dist=None,
         verbose=False,
@@ -47,10 +48,13 @@ class InterpolatingComponent(Model):
             the output are of the same type and data points are in matching indices.
                 "fits" for fullsky HEALPix maps.
                 "txt" for .txt files containing masked HEALPix pixels.
-        interpolation_kind : string
+        interpolation_type : string
             Change alternate way of interpolating linearly as well as 
             logarithmic.
             Supported: "linear", "log", "linear_origin" (Original linear implementation)
+        integration_type : string
+            Specifies what integration method to use. Default is trapezoid rule.
+            Also implemented are Simpson's rule and Monte Carlo.
         has_polarization : bool
             whether or not to simulate also polarization maps
         map_dist : pysm.MapDistribution
@@ -73,7 +77,8 @@ class InterpolatingComponent(Model):
         self.freqs.sort()
         self.input_units = input_units
         self.has_polarization = has_polarization
-        self.interpolation_kind = interpolation_kind
+        self.interpolation_type = interpolation_type
+        self.integration_type = integration_type
         self.verbose = verbose
         
     def get_filenames(self, path, filetype):
@@ -157,12 +162,13 @@ class InterpolatingComponent(Model):
                         )
 
         if self.verbose:
-            print('Interpolation type is {}'.format(self.interpolation_kind))
+            print('Interpolation type is {}'.format(self.interpolation_type))
+            print("Integration type is {}".format(self.integration_type))
 
         out = compute_interpolated_emission_numba(
-            nu, weights, freq_range, 
-            self.cached_maps, self.interpolation_kind
-        )
+              nu, weights, freq_range, 
+              self.cached_maps, self.interpolation_type, self.integration_type
+              )
 
         # the output of out is always 2D, (IQU, npix)
         return out << u.K_CMB
@@ -190,7 +196,8 @@ class InterpolatingComponent(Model):
 
 
 #@njit(parallel=False)
-def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, kind):
+def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, 
+                                        interpolation_type, integration_type):
     """
     Compute a single/bandpass emission from given cached frequency emissions. 
     Intended only for intensity (for now) until polarization are clearly needed.
@@ -210,9 +217,13 @@ def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, ki
     all_maps : numbad typed Dictionary
         Contains key and value pairs of frequency and emission data. Retrieve emission
         from the dictionary by passing in the corresponding frequency.
-    kind : string
+    interpolation_type : string
         Specifies the kind of interpolation technique: "linear", or "log". Use "linear_origin"
         for the original linear interpolation by pysm3. 
+    integration_type : string
+        The integration method to use. Default trapz, but also possible is simpson's. Monte Carlo
+        is a work in progress.
+
 
     Returns
     ----------
@@ -224,7 +235,7 @@ def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, ki
         all_maps[freq_range[0]].shape, dtype=all_maps[freq_range[0]].dtype
     )
     index_range = np.arange(len(freq_range))
-    if kind == 'linear_origin':
+    if interpolation_type == 'linear_origin':
         # The original implementation of linear interpolation by pysm3, kept in place here
         # for reference purposes. Call with interpolation kind : "linear_origin"
         for i in range(len(freqs)):
@@ -240,6 +251,7 @@ def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, ki
     else:
         # Loop through every frequency in freqs.
         for i in range(len(freqs)):
+            print('Computing for {} GHz'.format(freqs[i]))
             if (freqs[i] in freq_range):
                 m = all_maps[freqs[i]] # Case where desired frequency is cached.
             else:
@@ -251,8 +263,14 @@ def compute_interpolated_emission_numba(freqs, weights, freq_range, all_maps, ki
                 upper = all_maps[freq_range[int_pos+1]]
                 m = calc_interpolation(freqs[i], 
                                       freq_range[int_pos], freq_range[int_pos+1], 
-                                      lower, upper, kind) # Calculate interpolated emission.
-                trapz_step_inplace(freqs, weights, i, m, output)
+                                      lower, upper, 
+                                      interpolation_type) # Calculate interpolated emission.
+                if integration_type=="trapz":
+                    trapz_step_inplace(freqs, weights, i, m, output)
+                elif integration_type=="simps":
+                    print("Sorry, still working on it.")
+                elif integration_type=="mc":
+                    print("Sorry, still working on it. ")
     return output
 
 def calc_interpolation(nu, nu_a, nu_b, ma, mb, kind):
